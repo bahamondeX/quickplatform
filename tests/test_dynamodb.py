@@ -2,10 +2,12 @@
 DynamoDB ORM Tests
 """
 
-import pytest
 import uuid
-from unittest.mock import Mock, patch, MagicMock
-from . import DynamoORM, Model, KeySchema, AttributeDefinition
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
+from . import AttributeDefinition, DynamoORM, KeySchema, Model
 
 
 class User(Model):

@@ -1,553 +1,530 @@
-import typing as tp
-import boto3
-from pydantic import BaseModel, Field
-from botocore.exceptions import ClientError
+from __future__ import annotations
+
 import json
-from fastapi import APIRouter, status, HTTPException
-
-
-class CreateBucket(BaseModel):
-    bucket: str
-    region: tp.Literal[
-        "EU",
-        "af-south-1",
-        "ap-east-1",
-        "ap-northeast-1",
-        "ap-northeast-2",
-        "ap-northeast-3",
-        "ap-south-1",
-        "ap-south-2",
-        "ap-southeast-1",
-        "ap-southeast-2",
-        "ap-southeast-3",
-        "ap-southeast-4",
-        "ap-southeast-5",
-        "ca-central-1",
-        "cn-north-1",
-        "cn-northwest-1",
-        "eu-central-1",
-        "eu-north-1",
-        "eu-south-1",
-        "eu-west-1",
-        "eu-west-2",
-        "eu-west-3",
-        "me-central-1",
-        "me-south-1",
-        "sa-east-1",
-        "us-east-1",
-        "us-east-2",
-        "us-west-1",
-        "us-west-2",
-    ]
-    acl: tp.Literal["authenticated-read", "private", "public-read", "public-read-write"]
-    versioning: bool = False
-    encryption: bool = False
-    logging: bool = False
-
-
-class CreateBucketWebsiteHosting(BaseModel):
-    bucket: str
-    index_document: str = "index.html"
-    error_document: str = "error.html"
-
-
-class CreateBucketPolicy(BaseModel):
-    bucket: str
-    policy: str
-
-
-class CreateBucketNotification(BaseModel):
-    bucket: str
-    notification: str
-
-
-class CreateBucketLogging(BaseModel):
-    bucket: str
-    target_bucket: str
-    target_prefix: str = ""
-
-
-class LambdaEventSourceMapping(BaseModel):
-    event_source_arn: str
-    function_name: str
-    enabled: bool = True
-    batch_size: int = 10
-    maximum_batching_window_in_seconds: int = 0
-    parallelization_factor: int = 1
-    starting_position: tp.Literal["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"] = "LATEST"
-    starting_position_timestamp: float | None = None
-    maximum_record_age_in_seconds: int | None = None
-    bisect_batch_on_function_error: bool = False
-    maximum_retry_attempts: int | None = None
-    tumbling_window_in_seconds: int | None = None
-    topics: tp.List[str] = Field(default_factory=list)
-    queues: tp.List[str] = Field(default_factory=list)
-    source_access_configurations: tp.List[tp.Dict[str, str]]
-    self_managed_event_source: tp.Dict[str, tp.Any] = Field(default_factory=dict)
-    function_response_types: tp.List[str] = Field(default_factory=list)
-    filter_criteria: tp.Dict[str, tp.Any] = Field(default_factory=dict)
-    destination_config: tp.Dict[str, tp.Any] = Field(default_factory=dict)
-
-
-class UpdateEventSourceMapping(BaseModel):
-    uuid: str
-    enabled: bool | None = None
-    batch_size: int | None = None
-    maximum_batching_window_in_seconds: int | None = None
-    parallelization_factor: int | None = None
-    function_name: str | None = None
-    maximum_record_age_in_seconds: int | None = None
-    bisect_batch_on_function_error: bool | None = None
-    maximum_retry_attempts: int | None = None
-    tumbling_window_in_seconds: int | None = None
-    filter_criteria: tp.Dict[str, tp.Any] = Field(default_factory=dict)
-    destination_config: tp.Dict[str, tp.Any] = Field(default_factory=dict)
-
-
-class DeleteEventSourceMapping(BaseModel):
-    uuid: str
-
-
-class GetEventSourceMapping(BaseModel):
-    uuid: str
-
-
-class UploadObject(BaseModel):
-    bucket: str
-    key: str
-    file_path: str
-    content_type: str | None = None
-    metadata: tp.Dict[str, str] = Field(default_factory=dict)
-
-
-class DownloadObject(BaseModel):
-    bucket: str
-    key: str
-    file_path: str
-
-
-class DeleteObject(BaseModel):
-    bucket: str
-    key: str
-
-
-class ListObjects(BaseModel):
-    bucket: str
-    prefix: str = ""
-    max_keys: int = 1000
-
-
-class S3Client:
-    def __init__(
-        self,
-        aws_access_key_id: str | None = None,
-        aws_secret_access_key: str | None = None,
-        region_name: str = "us-east-1",
-    ):
-        self.s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-            region_name=region_name,
-            endpoint_url="https://aws.oscarbahamonde.com"
-        )
-        self.lambda_client = boto3.client(
-            "lambda",
-            aws_access_key_id=aws_access_key_id,
-            aws_secret_access_key=aws_secret_access_key,
-            region_name=region_name,
-            endpoint_url="https://aws.oscarbahamonde.com"
-        )
-
-    def create_bucket(self, config: CreateBucket):
-        try:
-            if config.region != "us-east-1":
-                self.s3_client.create_bucket(
-                    Bucket=config.bucket,
-                    CreateBucketConfiguration={"LocationConstraint": config.region},
-                    ACL=config.acl,
-                )
-            else:
-                self.s3_client.create_bucket(Bucket=config.bucket, ACL=config.acl)
-
-            if config.versioning:
-                self.s3_client.put_bucket_versioning(
-                    Bucket=config.bucket, VersioningConfiguration={"Status": "Enabled"}
-                )
-
-            if config.encryption:
-                self.s3_client.put_bucket_encryption(
-                    Bucket=config.bucket,
-                    ServerSideEncryptionConfiguration={
-                        "Rules": [
-                            {
-                                "ApplyServerSideEncryptionByDefault": {
-                                    "SSEAlgorithm": "AES256"
-                                }
-                            }
-                        ]
-                    },
-                )
-
-            return True
-        except ClientError:
-            return False
-
-    def configure_website_hosting(self, config: CreateBucketWebsiteHosting):
-        try:
-            self.s3_client.put_bucket_website(
-                Bucket=config.bucket,
-                WebsiteConfiguration={
-                    "IndexDocument": {"Suffix": config.index_document},
-                    "ErrorDocument": {"Key": config.error_document},
-                },
-            )
-            return True
-        except ClientError:
-            return False
-
-    def set_bucket_policy(self, config: CreateBucketPolicy):
-        try:
-            self.s3_client.put_bucket_policy(Bucket=config.bucket, Policy=config.policy)
-            return True
-        except ClientError:
-            return False
-
-    def set_bucket_notification(self, config: CreateBucketNotification):
-        try:
-            notification_config = json.loads(config.notification)
-            self.s3_client.put_bucket_notification_configuration(
-                Bucket=config.bucket, NotificationConfiguration=notification_config
-            )
-            return True
-        except ClientError:
-            return False
-
-    def configure_logging(self, config: CreateBucketLogging):
-        try:
-            self.s3_client.put_bucket_logging(
-                Bucket=config.bucket,
-                BucketLoggingStatus={
-                    "LoggingEnabled": {
-                        "TargetBucket": config.target_bucket,
-                        "TargetPrefix": config.target_prefix,
-                    }
-                },
-            )
-            return True
-        except ClientError:
-            return False
-
-    def upload_object(self, config: UploadObject):
-        try:
-            extra_args: tp.Dict[str, tp.Any] = {}
-            if config.content_type:
-                extra_args["ContentType"] = config.content_type
-            if config.metadata:
-                extra_args["Metadata"] = config.metadata
-
-            self.s3_client.upload_file(
-                config.file_path, config.bucket, config.key, ExtraArgs=extra_args
-            )
-            return True
-        except ClientError:
-            return False
-
-    def download_object(self, config: DownloadObject):
-        try:
-            self.s3_client.download_file(config.bucket, config.key, config.file_path)
-            return True
-        except ClientError:
-            return False
-
-    def delete_object(self, config: DeleteObject):
-        try:
-            self.s3_client.delete_object(Bucket=config.bucket, Key=config.key)
-            return True
-        except ClientError:
-            return False
-
-    def list_objects(self, config: ListObjects):
-        response = self.s3_client.list_objects_v2(
-            Bucket=config.bucket, Prefix=config.prefix, MaxKeys=config.max_keys
-        )
-        return response.get("Contents", [])
-
-    def delete_bucket(self, bucket: str):
-        try:
-            self.s3_client.delete_bucket(Bucket=bucket)
-            return True
-        except ClientError:
-            return False
-
-    def bucket_exists(self, bucket: str):
-        try:
-            self.s3_client.head_bucket(Bucket=bucket)
-            return True
-        except ClientError:
-            return False
-
-    def get_bucket_location(self, bucket: str) -> str:
-        response = self.s3_client.get_bucket_location(Bucket=bucket)
-        return response["LocationConstraint"] or "us-east-1"
-
-    def create_event_source_mapping(self, config: LambdaEventSourceMapping):
-
-        params: tp.Dict[str, tp.Any] = {
-            "EventSourceArn": config.event_source_arn,
-            "FunctionName": config.function_name,
-            "Enabled": config.enabled,
-            "BatchSize": config.batch_size,
-            "MaximumBatchingWindowInSeconds": config.maximum_batching_window_in_seconds,
-            "ParallelizationFactor": config.parallelization_factor,
-            "StartingPosition": config.starting_position,
-        }
-
-        if config.starting_position_timestamp:
-            params["StartingPositionTimestamp"] = config.starting_position_timestamp
-        if config.maximum_record_age_in_seconds:
-            params["MaximumRecordAgeInSeconds"] = config.maximum_record_age_in_seconds
-        if config.bisect_batch_on_function_error:
-            params["BisectBatchOnFunctionError"] = config.bisect_batch_on_function_error
-        if config.maximum_retry_attempts:
-            params["MaximumRetryAttempts"] = config.maximum_retry_attempts
-        if config.tumbling_window_in_seconds:
-            params["TumblingWindowInSeconds"] = config.tumbling_window_in_seconds
-        if config.topics:
-            params["Topics"] = config.topics
-        if config.queues:
-            params["Queues"] = config.queues
-        if config.source_access_configurations:
-            params["SourceAccessConfigurations"] = config.source_access_configurations
-        if config.self_managed_event_source:
-            params["SelfManagedEventSource"] = config.self_managed_event_source
-        if config.function_response_types:
-            params["FunctionResponseTypes"] = config.function_response_types
-        if config.filter_criteria:
-            params["FilterCriteria"] = config.filter_criteria
-        if config.destination_config:
-            params["DestinationConfig"] = config.destination_config
-
-        response = self.lambda_client.create_event_source_mapping(**params)
-        return response
-
-    def update_event_source_mapping(self, config: UpdateEventSourceMapping):
-        params: tp.Dict[str, tp.Any] = {"UUID": config.uuid}
-        if config.enabled:
-            params["Enabled"] = config.enabled
-        if config.batch_size:
-            params["BatchSize"] = config.batch_size
-        if config.maximum_batching_window_in_seconds:
-            params["MaximumBatchingWindowInSeconds"] = (
-                config.maximum_batching_window_in_seconds
-            )
-        if config.parallelization_factor:
-            params["ParallelizationFactor"] = config.parallelization_factor
-        if config.function_name:
-            params["FunctionName"] = config.function_name
-        if config.maximum_record_age_in_seconds:
-            params["MaximumRecordAgeInSeconds"] = config.maximum_record_age_in_seconds
-        if config.bisect_batch_on_function_error:
-            params["BisectBatchOnFunctionError"] = config.bisect_batch_on_function_error
-        if config.maximum_retry_attempts:
-            params["MaximumRetryAttempts"] = config.maximum_retry_attempts
-        if config.tumbling_window_in_seconds:
-            params["TumblingWindowInSeconds"] = config.tumbling_window_in_seconds
-        if config.filter_criteria:
-            params["FilterCriteria"] = config.filter_criteria
-        if config.destination_config:
-            params["DestinationConfig"] = config.destination_config
-
-        response = self.lambda_client.update_event_source_mapping(**params)
-        return response
-
-    def delete_event_source_mapping(self, config: DeleteEventSourceMapping):
-        try:
-            self.lambda_client.delete_event_source_mapping(UUID=config.uuid)
-            return True
-        except ClientError:
-            return False
-
-    def get_event_source_mapping(self, config: GetEventSourceMapping):
-        response = self.lambda_client.get_event_source_mapping(UUID=config.uuid)
-        return response
-
-    def list_event_source_mappings(
-        self, function_name: str | None = None, event_source_arn: str | None = None
-    ):
-        params: tp.Dict[str, tp.Any] = {}
-        if function_name:
-            params["FunctionName"] = function_name
-        if event_source_arn:
-            params["EventSourceArn"] = event_source_arn
-
-        response = self.lambda_client.list_event_source_mappings(**params)
-        return response.get("EventSourceMappings", [])
-
-
-client = S3Client()
-app = APIRouter()
-
-
-# S3 Bucket Endpoints
-@app.post("/api/v1/buckets", status_code=status.HTTP_201_CREATED)
-async def create_bucket(config: CreateBucket):
-    result = client.create_bucket(config)
-    if result:
-        return {"message": "Bucket created successfully", "bucket": config.bucket}
-    raise HTTPException(status_code=400, detail="Failed to create bucket")
-
-
-@app.get("/api/v1/buckets")
-async def list_buckets():
-    try:
-        response = client.s3_client.list_buckets()
-        return {"buckets": response["Buckets"]}
-    except ClientError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.delete("/api/v1/buckets/{bucket_name}")
-async def delete_bucket(bucket_name: str):
-    result = client.delete_bucket(bucket_name)
-    if result:
-        return {"message": "Bucket deleted successfully"}
-    raise HTTPException(status_code=400, detail="Failed to delete bucket")
-
-
-@app.get("/api/v1/buckets/{bucket_name}/exists")
-async def bucket_exists(bucket_name: str):
-    exists = client.bucket_exists(bucket_name)
-    return {"exists": exists}
-
-
-@app.get("/api/v1/buckets/{bucket_name}/location")
-async def get_bucket_location(bucket_name: str):
-    location = client.get_bucket_location(bucket_name)
-    return {"location": location}
-
-
-# S3 Object Endpoints
-@app.post("/api/v1/buckets/{bucket_name}/objects")
-async def upload_object(bucket_name: str, config: UploadObject):
-    config.bucket = bucket_name
-    result = client.upload_object(config)
-    if result:
-        return {"message": "Object uploaded successfully", "key": config.key}
-    raise HTTPException(status_code=400, detail="Failed to upload object")
-
-
-@app.get("/api/v1/buckets/{bucket_name}/objects")
-async def list_objects(bucket_name: str, prefix: str = "", max_keys: int = 1000):
-    config = ListObjects(bucket=bucket_name, prefix=prefix, max_keys=max_keys)
-    objects = client.list_objects(config)
-    return {"objects": objects}
-
-
-@app.delete("/api/v1/buckets/{bucket_name}/objects/{key}")
-async def delete_object(bucket_name: str, key: str):
-    config = DeleteObject(bucket=bucket_name, key=key)
-    result = client.delete_object(config)
-    if result:
-        return {"message": "Object deleted successfully"}
-    raise HTTPException(status_code=400, detail="Failed to delete object")
-
-
-@app.post("/api/v1/buckets/{bucket_name}/objects/{key}/download")
-async def download_object(bucket_name: str, key: str, file_path: str):
-    config = DownloadObject(bucket=bucket_name, key=key, file_path=file_path)
-    result = client.download_object(config)
-    if result:
-        return {"message": "Object downloaded successfully", "file_path": file_path}
-    raise HTTPException(status_code=400, detail="Failed to download object")
-
-
-# S3 Website Hosting Endpoints
-@app.post("/api/v1/buckets/{bucket_name}/website")
-async def configure_website_hosting(
-    bucket_name: str, config: CreateBucketWebsiteHosting
+from typing import Any, List, Literal, Optional, Sequence, Union
+
+import boto3
+from botocore.exceptions import ClientError
+from fastapi import APIRouter, File, UploadFile, status
+from pydantic import BaseModel, Field
+from typing_extensions import NotRequired, TypedDict
+from datetime import datetime
+
+# =======================================================================
+# 1. Clientes Boto3 y Excepción Personalizada
+# =======================================================================
+
+
+s3_client = boto3.client("s3", endpoint_url="https://aws.oscarbahamonde.com")
+s3_resource = boto3.resource("s3", endpoint_url="https://aws.oscarbahamonde.com")
+
+BucketLocationConstraintType = Literal[
+	"us-east-1",
+	"eu-west-1",
+	"ap-southeast-1",
+	"sa-east-1",
+	"ca-central-1",
+	"ap-southeast-2",
+]
+
+
+ChecksumAlgorithmType = Literal["CRC32", "CRC32C", "SHA1", "SHA256"]
+
+
+class LocationInfoTypeDef(TypedDict):
+	Bucket: str
+	Region: str
+
+
+class BucketInfoTypeDef(TypedDict):
+	Name: str
+	CreationDate: datetime
+
+
+class TagTypeDef(TypedDict):
+	Key: str
+	Value: str
+
+
+class CopySourceTypeDef(TypedDict):
+	Bucket: str
+	Key: str
+	VersionId: NotRequired[str]
+
+
+class CreateBucketConfigurationTypeDef(TypedDict):
+	LocationConstraint: NotRequired[BucketLocationConstraintType]
+	Location: NotRequired[LocationInfoTypeDef]
+	Bucket: NotRequired[BucketInfoTypeDef]
+	Tags: NotRequired[Sequence[TagTypeDef]]
+
+
+class S3Error(Exception):
+	"""Excepción personalizada para errores de la API de S3."""
+
+	def __init__(self, message: str, status_code: int = 400):
+		self.message = message
+		self.status_code = status_code
+		super().__init__(self.message)
+
+
+# =======================================================================
+# 2. Modelos Pydantic para Configuración de Buckets
+# =======================================================================
+
+
+class CORSRuleTypeDef(TypedDict):
+	AllowedMethods: Sequence[str]
+	AllowedOrigins: Sequence[str]
+	ID: NotRequired[str]
+	AllowedHeaders: NotRequired[Sequence[str]]
+	ExposeHeaders: NotRequired[Sequence[str]]
+	MaxAgeSeconds: NotRequired[int]
+
+
+class MessageResponse(TypedDict):
+	message: str
+
+
+class CORSRuleOutputTypeDef(TypedDict):
+	AllowedMethods: List[str]
+	AllowedOrigins: List[str]
+	ID: NotRequired[str]
+	AllowedHeaders: NotRequired[List[str]]
+	ExposeHeaders: NotRequired[List[str]]
+	MaxAgeSeconds: NotRequired[int]
+
+
+class WebsiteConfiguration(TypedDict):
+	"""Define la configuración de sitio web estático para un bucket."""
+
+	ErrorDocument: Optional[dict[str, str]]
+	IndexDocument: dict[str, str]
+
+
+class PublicAccessBlockConfiguration(TypedDict):
+	"""Define la configuración de bloqueo de acceso público."""
+
+	BlockPublicAcls: bool
+	IgnorePublicAcls: bool
+	BlockPublicPolicy: bool
+	RestrictPublicBuckets: bool
+
+
+class CORSConfigurationTypeDef(TypedDict):
+	CORSRules: Sequence[Union[CORSRuleTypeDef, CORSRuleOutputTypeDef]]
+
+
+class ErrorDocumentTypeDef(TypedDict):
+	Key: str
+
+
+class IndexDocumentTypeDef(TypedDict):
+	Suffix: str
+
+
+class RedirectAllRequestsToTypeDef(TypedDict):
+	HostName: str
+	Protocol: NotRequired[Literal["http", "https"]]
+
+
+class RoutingRuleTypeDef(TypedDict):
+	Condition: NotRequired[RoutingRuleConditionTypeDef]
+	Redirect: NotRequired[RedirectTypeDef]
+
+
+class RoutingRuleConditionTypeDef(TypedDict):
+	HttpErrorCodeReturnedEquals: NotRequired[str]
+	KeyPrefixEquals: NotRequired[str]
+
+
+class RedirectTypeDef(TypedDict):
+	HostName: NotRequired[str]
+	ReplaceKeyPrefixWith: NotRequired[str]
+	ReplaceKeyWith: NotRequired[str]
+	HttpRedirectCode: NotRequired[str]
+	Protocol: NotRequired[str]
+
+
+class WebsiteConfigurationTypeDef(TypedDict):
+	ErrorDocument: NotRequired[ErrorDocumentTypeDef]
+	IndexDocument: NotRequired[IndexDocumentTypeDef]
+	RedirectAllRequestsTo: NotRequired[RedirectAllRequestsToTypeDef]
+	RoutingRules: NotRequired[Any]
+
+
+class PublicAccessBlockConfigurationTypeDef(TypedDict):
+	BlockPublicAcls: bool
+	IgnorePublicAcls: bool
+	BlockPublicPolicy: bool
+	RestrictPublicBuckets: bool
+
+
+class PutBucketWebsiteRequestTypeDef(TypedDict):
+	Bucket: str
+	WebsiteConfiguration: WebsiteConfigurationTypeDef
+	ChecksumAlgorithm: NotRequired[ChecksumAlgorithmType]
+	ExpectedBucketOwner: NotRequired[str]
+
+
+class PutBucketWebsiteResponseTypeDef(TypedDict):
+	Location: str
+	WebsiteURL: str
+
+
+class PutObjectResponseTypeDef(TypedDict):
+	ETag: str
+	VersionId: str
+	Location: str
+	Expiration: str
+	ServerSideEncryption: str
+	ChecksumAlgorithm: str
+
+
+# =======================================================================
+# 3. Modelos Pydantic para Requests y Responses de la API
+# =======================================================================
+
+
+class BucketPolicyRequest(BaseModel):
+	policy: dict[str, Any] = Field(
+		..., description="Documento JSON de la política del bucket."
+	)
+
+
+class CopyObjectAdvancedRequest(BaseModel):
+	source_bucket: str
+	source_key: str
+	metadata_directive: Literal["COPY", "REPLACE"] = "COPY"
+	acl: Literal[
+		"private", "public-read", "public-read-write", "authenticated-read"
+	] = "private"
+	storage_class: Literal[
+		"STANDARD", "STANDARD_IA", "REDUCED_REDUNDANCY", "GLACIER", "DEEP_ARCHIVE"
+	] = "STANDARD"
+
+
+class BucketCreateRequest(BaseModel):
+	bucket_name: str = Field(..., description="Nombre del bucket a crear.")
+	region: BucketLocationConstraintType = Field(
+		"us-east-1", description="Región de AWS donde se creará el bucket."
+	)
+
+
+class ObjectInfo(BaseModel):
+	key: str = Field(..., alias="Key")
+	last_modified: datetime = Field(..., alias="LastModified")
+	size: int = Field(..., alias="Size")
+
+	class Config:
+		allow_population_by_field_name = True
+
+
+class CopyObjectRequest(BaseModel):
+	source_bucket: str
+	source_key: str
+
+
+class PresignedUrlResponse(BaseModel):
+	method: str
+	url: str
+
+
+class BucketInfo(BaseModel):
+	name: str = Field(..., alias="Name")
+	creation_date: datetime = Field(..., alias="CreationDate")
+
+	class Config:
+		allow_population_by_field_name = True
+
+
+# =======================================================================
+# 4. Clase S3Bucket con Lógica OOP Integrada
+# =======================================================================
+
+
+class S3Bucket(BaseModel):
+	name: str
+
+	@classmethod
+	def create(
+		cls, bucket_name: str, region: BucketLocationConstraintType
+	) -> "S3Bucket":
+		"""Crea un nuevo bucket S3."""
+		try:
+			s3_client.create_bucket(Bucket=bucket_name)
+			return cls(name=bucket_name)
+		except ClientError as e:
+			raise S3Error(f"No se pudo crear el bucket '{bucket_name}': {e}")
+
+	@classmethod
+	def list_all(cls) -> List[BucketInfo]:
+		"""Lista todos los buckets S3 en la cuenta."""
+		try:
+			response = s3_client.list_buckets()
+			return [
+				BucketInfo.model_validate(bucket)
+				for bucket in response.get("Buckets", [])
+			]
+		except ClientError as e:
+			raise S3Error(f"No se pudieron listar los buckets: {e}")
+
+	def empty_and_delete(self):
+		"""Vacía completamente el bucket (incluyendo versiones) y luego lo elimina."""
+		try:
+			bucket_resource = s3_resource.Bucket(self.name)
+			# Elimina todas las versiones de objetos y marcadores de eliminación
+			bucket_resource.object_versions.delete()
+			bucket_resource.delete()
+		except ClientError as e:
+			raise S3Error(f"No se pudo vaciar y eliminar el bucket '{self.name}': {e}")
+
+	def list_objects(self) -> List[ObjectInfo]:
+		"""Lista los objetos dentro de este bucket."""
+		try:
+			response = s3_client.list_objects_v2(Bucket=self.name)
+			return [
+				ObjectInfo.model_validate(obj) for obj in response.get("Contents", [])
+			]
+		except ClientError as e:
+			raise S3Error(f"No se pudieron listar los objetos de '{self.name}': {e}")
+
+	def put_object(self, object_key: str, file: UploadFile):
+		"""Sube un objeto a este bucket."""
+		try:
+			s3_client.upload_fileobj(file.file, self.name, object_key)
+		except ClientError as e:
+			raise S3Error(
+				f"No se pudo subir el objeto '{object_key}' a '{self.name}': {e}"
+			)
+
+	def delete_object(self, object_key: str):
+		"""Elimina un objeto de este bucket."""
+		try:
+			s3_client.delete_object(Bucket=self.name, Key=object_key)
+		except ClientError as e:
+			raise S3Error(
+				f"No se pudo eliminar el objeto '{object_key}' de '{self.name}': {e}"
+			)
+
+	def copy_object(self, source_key: str, dest_key: str, source_bucket: str):
+		"""Copia un objeto a este bucket."""
+		try:
+			copy_source = CopySourceTypeDef(Bucket=source_bucket, Key=source_key)
+			s3_client.copy_object(
+				CopySource=copy_source, Bucket=self.name, Key=dest_key
+			)
+		except ClientError as e:
+			raise S3Error(f"No se pudo copiar el objeto: {e}")
+
+	def generate_presigned_url(
+		self, object_key: str, expiration: int = 3600, method: str = "get_object"
+	) -> str:
+		"""Genera una URL prefirmada para un objeto."""
+		try:
+			params = {"Bucket": self.name, "Key": object_key}
+			url = s3_client.generate_presigned_url(
+				method, Params=params, ExpiresIn=expiration
+			)
+			return url
+		except ClientError as e:
+			raise S3Error(
+				f"No se pudo generar la URL prefirmada para '{object_key}': {e}"
+			)
+
+	# --- Métodos de Configuración ---
+	def configure_cors(self, cors_config: CORSConfigurationTypeDef):
+		try:
+			s3_client.put_bucket_cors(Bucket=self.name, CORSConfiguration=cors_config)
+		except ClientError as e:
+			raise S3Error(f"Error configurando CORS para '{self.name}': {e}")
+
+	def configure_website(self, website_config: WebsiteConfigurationTypeDef):
+		try:
+			s3_client.put_bucket_website(
+				Bucket=self.name, WebsiteConfiguration=website_config
+			)
+		except ClientError as e:
+			raise S3Error(f"Error configurando el sitio web para '{self.name}': {e}")
+
+	def copy_object_advanced(
+		self,
+		source_key: str,
+		dest_key: str,
+		source_bucket: str,
+		metadata_directive: Literal["COPY", "REPLACE"] = "COPY",
+		acl: Literal[
+			"private",
+			"public-read",
+			"public-read-write",
+			"aws-exec-read",
+			"authenticated-read",
+			"bucket-owner-read",
+			"bucket-owner-full-control",
+		] = "private",
+		storage_class: Literal[
+			"STANDARD", "STANDARD_IA", "REDUCED_REDUNDANCY", "GLACIER", "DEEP_ARCHIVE"
+		] = "STANDARD",
+	):
+		try:
+			s3_client.copy_object(
+				Bucket=self.name,
+				Key=dest_key,
+				CopySource={"Bucket": source_bucket, "Key": source_key},
+				MetadataDirective=metadata_directive,
+				ACL=acl,
+				StorageClass=storage_class,
+			)
+		except ClientError as e:
+			raise S3Error(f"No se pudo copiar el objeto con opciones avanzadas: {e}")
+
+	def set_bucket_policy(self, policy_document: dict[str, Any]):
+		try:
+			s3_client.put_bucket_policy(
+				Bucket=self.name,
+				Policy=json.dumps(policy_document),
+			)
+		except ClientError as e:
+			raise S3Error(f"No se pudo establecer la política del bucket: {e}")
+
+	def get_bucket_policy(self) -> dict[str, Any]:
+		try:
+			response = s3_client.get_bucket_policy(Bucket=self.name)
+			return json.loads(response["Policy"])
+		except ClientError as e:
+			if e.response.get("Error", {}).get("Code") == "NoSuchBucketPolicy":
+				return {}
+			raise S3Error(f"No se pudo obtener la política del bucket: {e}")
+
+	def delete_bucket_policy(self):
+		try:
+			s3_client.delete_bucket_policy(Bucket=self.name)
+		except ClientError as e:
+			raise S3Error(f"No se pudo eliminar la política del bucket: {e}")
+
+
+# =======================================================================
+# 5. Definición del APIRouter con todos los Endpoints
+# =======================================================================
+
+app = APIRouter(prefix="/s3", tags=["S3 Management"])
+
+
+# --- Endpoints de Buckets ---
+@app.get("/buckets", response_model=List[BucketInfo])
+def list_buckets():
+	return S3Bucket.list_all()
+
+
+@app.post("/buckets", response_model=S3Bucket, status_code=status.HTTP_201_CREATED)
+def create_bucket(req: BucketCreateRequest):
+	return S3Bucket.create(bucket_name=req.bucket_name, region=req.region)
+
+
+@app.delete("/buckets/{bucket_name}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_bucket(bucket_name: str):
+	bucket = S3Bucket(name=bucket_name)
+	bucket.empty_and_delete()
+
+
+# --- Endpoints de Objetos ---
+@app.get("/buckets/{bucket_name}/objects", response_model=List[ObjectInfo])
+def list_objects(bucket_name: str):
+	bucket = S3Bucket(name=bucket_name)
+	return bucket.list_objects()
+
+
+@app.put(
+	"/buckets/{bucket_name}/objects/{object_key}",
+	response_model=MessageResponse,
+)
+async def upload_object(
+	bucket_name: str, object_key: str, file: UploadFile = File(...)
 ):
-    config.bucket = bucket_name
-    result = client.configure_website_hosting(config)
-    if result:
-        return {"message": "Website hosting configured successfully"}
-    raise HTTPException(status_code=400, detail="Failed to configure website hosting")
+	s3_client.put_object(Bucket=bucket_name, Key=object_key, Body=file.file, ContentType=file.content_type or "application/octet-stream", ContentDisposition="inline")
+	return {"message": s3_client.generate_presigned_url(
+		ClientMethod="get_object",
+		Params={"Bucket": bucket_name, "Key": object_key},
+		ExpiresIn=3600,
+	)}
+
+@app.delete(
+	"/buckets/{bucket_name}/objects/{object_key}",
+	status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_object(bucket_name: str, object_key: str):
+	bucket = S3Bucket(name=bucket_name)
+	bucket.delete_object(object_key=object_key)
 
 
-# S3 Policy Endpoints
-@app.post("/api/v1/buckets/{bucket_name}/policy")
-async def set_bucket_policy(bucket_name: str, config: CreateBucketPolicy):
-    config.bucket = bucket_name
-    result = client.set_bucket_policy(config)
-    if result:
-        return {"message": "Bucket policy set successfully"}
-    raise HTTPException(status_code=400, detail="Failed to set bucket policy")
+@app.post(
+	"/buckets/{dest_bucket}/objects/{dest_key}/copy", response_model=MessageResponse
+)
+def copy_object(dest_bucket: str, dest_key: str, req: CopyObjectRequest):
+	bucket = S3Bucket(name=dest_bucket)
+	bucket.copy_object(
+		source_key=req.source_key, dest_key=dest_key, source_bucket=req.source_bucket
+	)
+	return {"message": "Copia exitosa"}
 
 
-# S3 Notification Endpoints
-@app.post("/api/v1/buckets/{bucket_name}/notifications")
-async def set_bucket_notification(bucket_name: str, config: CreateBucketNotification):
-    config.bucket = bucket_name
-    result = client.set_bucket_notification(config)
-    if result:
-        return {"message": "Bucket notification configured successfully"}
-    raise HTTPException(
-        status_code=400, detail="Failed to configure bucket notification"
-    )
+# --- Endpoints de Utilidades y Configuración ---
+@app.post(
+	"/buckets/{bucket_name}/objects/{object_key}/presigned-url",
+	response_model=PresignedUrlResponse,
+)
+def get_presigned_url(bucket_name: str, object_key: str):
+	bucket = S3Bucket(name=bucket_name)
+	url = bucket.generate_presigned_url(object_key=object_key)
+	return PresignedUrlResponse(method="GET", url=url)
 
 
-# S3 Logging Endpoints
-@app.post("/api/v1/buckets/{bucket_name}/logging")
-async def configure_logging(bucket_name: str, config: CreateBucketLogging):
-    config.bucket = bucket_name
-    result = client.configure_logging(config)
-    if result:
-        return {"message": "Logging configured successfully"}
-    raise HTTPException(status_code=400, detail="Failed to configure logging")
+@app.put("/buckets/{bucket_name}/cors", status_code=status.HTTP_204_NO_CONTENT)
+def set_bucket_cors(bucket_name: str, cors_config: CORSConfigurationTypeDef):
+	bucket = S3Bucket(name=bucket_name)
+	bucket.configure_cors(cors_config)
 
 
-# Lambda Event Source Mapping Endpoints
-@app.post("/api/v1/lambda/event-source-mappings", status_code=status.HTTP_201_CREATED)
-async def create_event_source_mapping(config: LambdaEventSourceMapping):
-    try:
-        response = client.create_event_source_mapping(config)
-        return response
-    except ClientError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.put("/buckets/{bucket_name}/website", status_code=status.HTTP_204_NO_CONTENT)
+def set_bucket_website(bucket_name: str, website_config: WebsiteConfigurationTypeDef):
+	bucket = S3Bucket(name=bucket_name)
+	bucket.configure_website(website_config)
 
 
-@app.get("/api/v1/lambda/event-source-mappings")
-async def list_event_source_mappings(
-    function_name: str | None = None, event_source_arn: str | None = None
+@app.post(
+	"/buckets/{dest_bucket}/objects/{dest_key}/copy/advanced",
+	response_model=MessageResponse,
+)
+def copy_object_advanced(
+	dest_bucket: str, dest_key: str, req: CopyObjectAdvancedRequest
 ):
-    mappings = client.list_event_source_mappings(function_name, event_source_arn)
-    return {"event_source_mappings": mappings}
+	bucket = S3Bucket(name=dest_bucket)
+	bucket.copy_object_advanced(
+		source_key=req.source_key,
+		dest_key=dest_key,
+		source_bucket=req.source_bucket,
+		metadata_directive=req.metadata_directive,
+		acl=req.acl,
+		storage_class=req.storage_class,
+	)
+	return {"message": "Copia avanzada exitosa"}
 
 
-@app.get("/api/v1/lambda/event-source-mappings/{uuid}")
-async def get_event_source_mapping(uuid: str):
-    config = GetEventSourceMapping(uuid=uuid)
-    try:
-        response = client.get_event_source_mapping(config)
-        return response
-    except ClientError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+@app.put("/buckets/{bucket_name}/policy", response_model=MessageResponse)
+def set_bucket_policy(bucket_name: str, req: BucketPolicyRequest):
+	bucket = S3Bucket(name=bucket_name)
+	bucket.set_bucket_policy(req.policy)
+	return {"message": "Política aplicada correctamente"}
 
 
-@app.put("/api/v1/lambda/event-source-mappings/{uuid}")
-async def update_event_source_mapping(uuid: str, config: UpdateEventSourceMapping):
-    config.uuid = uuid
-    try:
-        response = client.update_event_source_mapping(config)
-        return response
-    except ClientError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.get("/buckets/{bucket_name}/policy", response_model=dict)
+def get_bucket_policy(bucket_name: str):
+	bucket = S3Bucket(name=bucket_name)
+	return bucket.get_bucket_policy()
 
 
-@app.delete("/api/v1/lambda/event-source-mappings/{uuid}")
-async def delete_event_source_mapping(uuid: str):
-    config = DeleteEventSourceMapping(uuid=uuid)
-    result = client.delete_event_source_mapping(config)
-    if result:
-        return {"message": "Event source mapping deleted successfully"}
-    raise HTTPException(status_code=400, detail="Failed to delete event source mapping")
+@app.delete("/buckets/{bucket_name}/policy", response_model=MessageResponse)
+def delete_bucket_policy(bucket_name: str):
+	bucket = S3Bucket(name=bucket_name)
+	bucket.delete_bucket_policy()
+	return {"message": "Política eliminada correctamente"}
