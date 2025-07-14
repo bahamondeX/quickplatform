@@ -967,7 +967,7 @@ class IAMClient:
 
 
 # FastAPI Router
-app = APIRouter()
+app = APIRouter(prefix="/api/v1/iam")
 iam_client = IAMClient() # Initialize IAM client
 
 # Exception Handling for ClientError
